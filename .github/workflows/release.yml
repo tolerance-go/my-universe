@@ -1,0 +1,149 @@
+name: Release - 版本发布
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# 添加权限配置，允许创建 Release 和上传构建产物
+permissions:
+  contents: write  # 允许创建 Release 和上传文件
+  packages: read   # 允许读取包
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 发布前检查
+  pre-release-check:
+    name: 发布前检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 验证标签格式
+        run: |
+          if [[ ! "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            echo "❌ 标签格式不正确！应该是 v*.*.*"
+            exit 1
+          fi
+          echo "✅ 标签格式正确: ${{ github.ref_name }}"
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 运行代码检查
+        run: npm run lint
+
+      - name: 构建检查
+        run: npm run build
+
+  # Tauri 构建和发布
+  build-tauri:
+    name: 构建 Tauri 应用
+    needs: pre-release-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+            arch: 'aarch64'
+          - platform: 'macos-latest' 
+            args: '--target x86_64-apple-darwin'
+            arch: 'x86_64'
+          - platform: 'ubuntu-22.04'
+            args: ''
+            arch: 'x86_64'
+          - platform: 'windows-latest'
+            args: ''
+            arch: 'x86_64'
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: 安装系统依赖 (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建 Tauri 应用
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'My Universe ${{ github.ref_name }}'
+          releaseBody: |
+            🎉 **My Universe ${{ github.ref_name }}** 发布！
+
+            ## 📋 更新内容
+            查看 [提交记录](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) 了解详细更改。
+
+            ## 📦 下载说明
+            请根据您的操作系统选择对应的安装包：
+
+            ### Windows
+            - 🔧 **`.exe`** - 可执行文件
+
+            ### macOS  
+            - 💾 **`.dmg`** - macOS 磁盘镜像
+            - 🍎 **Apple Silicon (M1/M2)** 和 **Intel** 芯片均支持
+
+            ### Linux
+            - 📱 **`.AppImage`** - 便携版，无需安装
+            - 📦 **`.deb`** - Debian/Ubuntu 包管理器安装包
+
+            ## 🚀 安装步骤
+            1. 下载对应平台的安装包
+            2. 按照系统提示完成安装
+            3. 首次运行时可能需要允许未知来源应用
+
+            ## ⚠️ 注意事项
+            - **macOS**: 可能需要在"系统偏好设置 > 安全性与隐私"中允许应用运行
+            - **Windows**: 如果 SmartScreen 阻止，请点击"更多信息"然后"仍要运行"
+            - **Linux**: 
+              - `.AppImage` 下载后需要添加执行权限：`chmod +x *.AppImage`
+              - `.deb` 包可以使用 `sudo dpkg -i *.deb` 安装
+
+            ---
+            ❤️ 感谢使用 My Universe！如有问题请提交 [Issue](https://github.com/${{ github.repository }}/issues)
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          args: ${{ matrix.args }}
+
+  # 发布完成通知
+  post-release:
+    name: 发布完成
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    steps:
+      - name: 发布成功通知
+        run: |
+          echo "🎉 版本 ${{ github.ref_name }} 发布成功！"
+          echo "📦 构建产物已上传到 GitHub Releases"
+          echo "🔗 下载链接: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" 
